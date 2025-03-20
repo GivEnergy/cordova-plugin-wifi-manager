@@ -9,6 +9,7 @@ import android.net.NetworkRequest;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiNetworkSpecifier;
+import android.net.MacAddress;
 import android.os.Build;
 
 import org.apache.cordova.CallbackContext;
@@ -18,6 +19,8 @@ import org.apache.cordova.CordovaWebView;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import android.util.Log;
 
 
 public class WiFiManagerPlugin extends CordovaPlugin {
@@ -41,9 +44,13 @@ public class WiFiManagerPlugin extends CordovaPlugin {
     private static final String UNAVAILABLE_NETWORK_ERROR_MESSAGE   = "network is unavailable.";
     private static final String UNKNOWN_ACTION_ERROR_MESSAGE        = "unknownAction occurred.";
 
+    private static final String TAG = "WiFiManager";
+
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
+    private NetworkRequest networkRequest;
     private WifiManager wifiManager;
+    private WifiManager.WifiLock wifiLock;
 
     @Override
     public void initialize(CordovaInterface cordova, CordovaWebView webView) {
@@ -83,22 +90,36 @@ public class WiFiManagerPlugin extends CordovaPlugin {
     private void connect(JSONArray args, CallbackContext callbackContext) throws JSONException {
         String ssid = args.optString(0);
         String passphrase = args.optString(1);
+        String bssid = args.optString(2);
 
         if (isAndroidQOrLater()) {
-            connectAndroidQ(ssid, passphrase, callbackContext);
+            Log.d(TAG, "Android Q & Above");
+            connectAndroidQ(ssid, passphrase, bssid, callbackContext);
         } else {
+            Log.d(TAG, "Android Q & Below");
             connectAndroid(ssid, passphrase, callbackContext);
         }
     }
 
     @TargetApi(Build.VERSION_CODES.Q)
-    private void connectAndroidQ(final String ssid, final String passphrase, CallbackContext callbackContext) {
+    private void connectAndroidQ(final String ssid, final String passphrase,final String bssid, CallbackContext callbackContext) {
         WifiNetworkSpecifier.Builder wifiNetworkSpecifierBuilder = new WifiNetworkSpecifier.Builder()
                 .setSsid(ssid)
                 .setWpa2Passphrase(passphrase);
 
+        // Only set BSSID if it's not null or empty
+        if (bssid != null && !bssid.isEmpty()) {
+            Log.d(TAG,"With BSSID "+bssid);
+            wifiNetworkSpecifierBuilder.setBssid(MacAddress.fromString(bssid));
+        }
+
         NetworkRequest networkRequest = new NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                 .setNetworkSpecifier(wifiNetworkSpecifierBuilder.build())
                 .build();
 
@@ -112,10 +133,18 @@ public class WiFiManagerPlugin extends CordovaPlugin {
             public void onAvailable(Network network) {
                 super.onAvailable(network);
                 JSONObject json = new JSONObject();
-                if (connectivityManager.bindProcessToNetwork(network)) {
+                boolean success = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                    ? connectivityManager.bindProcessToNetwork(network)
+                    : ConnectivityManager.setProcessDefaultNetwork(network);
+
+                if (success) {
+                    Log.d(TAG,"Connected");
+                    connectivityManager.reportNetworkConnectivity(network, true);
+                    acquireWifiLock();
                     callbackContext.success();
                 } else {
                     try {
+                        Log.d(TAG,"Error: "+BIND_TO_NETWORK_ERROR);
                         json.put("code", BIND_TO_NETWORK_ERROR);
                         json.put("message", BIND_TO_NETWORK_ERROR_MESSAGE);
                     } catch(JSONException ignored) {
@@ -128,8 +157,10 @@ public class WiFiManagerPlugin extends CordovaPlugin {
             @Override
             public void onUnavailable() {
                 super.onUnavailable();
+                releaseWifiLock();
                 JSONObject json = new JSONObject();
                 try {
+                    Log.d(TAG,"Error: "+UNAVAILABLE_NETWORK_ERROR);
                     json.put("code", UNAVAILABLE_NETWORK_ERROR);
                     json.put("message", UNAVAILABLE_NETWORK_ERROR_MESSAGE);
                 } catch(JSONException ignored) {
@@ -141,6 +172,8 @@ public class WiFiManagerPlugin extends CordovaPlugin {
             @Override
             public void onLost(Network network) {
                 super.onLost(network);
+                Log.d(TAG,"Connection Lost");
+                releaseWifiLock();
             }
 
             @Override
@@ -189,7 +222,7 @@ public class WiFiManagerPlugin extends CordovaPlugin {
 
     private void disconnect(JSONArray args, CallbackContext callbackContext) throws JSONException {
         String ssid = args.optString(0);
-
+        Log.d(TAG,"Disconnected");
         if (isAndroidQOrLater()) {
             disconnectAndroidQ(callbackContext);
         } else {
@@ -203,6 +236,7 @@ public class WiFiManagerPlugin extends CordovaPlugin {
             connectivityManager.bindProcessToNetwork(null);
             connectivityManager.unregisterNetworkCallback(networkCallback);
             networkCallback = null;
+            releaseWifiLock();
         }
 
         callbackContext.success();
@@ -238,6 +272,25 @@ public class WiFiManagerPlugin extends CordovaPlugin {
 
         callbackContext.success();
     }
+
+    private void acquireWifiLock(){
+        if (wifiLock == null) {
+            Context context = cordova.getActivity().getApplicationContext();
+            WifiManager wifiManager = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
+            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "WiFiManagerLock");
+        }
+        if (!wifiLock.isHeld()) {
+            wifiLock.acquire();
+            Log.d(TAG, "WiFi Lock acquired");
+        }
+    }
+
+    private void releaseWifiLock() {
+    if (wifiLock != null && wifiLock.isHeld()) {
+        wifiLock.release();
+        Log.d(TAG, "WiFi Lock released");
+    }
+}
 
     private void executeUnknownAction(CallbackContext callbackContext) throws JSONException {
         JSONObject json = new JSONObject();
