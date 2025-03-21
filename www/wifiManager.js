@@ -8,12 +8,13 @@ const exec = require('cordova/exec');
  * Connects to Wi-Fi access point.
  * @param ssid {String} SSID of Wi-Fi access point.
  * @param passphrase {String} Passphrase of Wi-Fi access point.
+ * @param bssid {String} Optional BSSID of the Wi-Fi access point.
  * @param onSuccess {Function} Callback invoked when the connect method was successfully called.
  * @param onFailure {Function} Callback invoked when the connect method failed to be called.
  */
-function connect(ssid, passphrase, onSuccess, onFailure) {
-  argscheck.checkArgs('ssFF', PLUGIN_NAME + '.connect', arguments);
-  exec(onSuccess, onFailure, PLUGIN_NAME, 'connect', [ssid, passphrase]);
+function connect(ssid, passphrase, bssid, onSuccess, onFailure) {
+  argscheck.checkArgs('sssFF', PLUGIN_NAME + '.connect', arguments);
+  exec(onSuccess, onFailure, PLUGIN_NAME, 'connect', [ssid, passphrase, bssid]);
 }
 
 /**
